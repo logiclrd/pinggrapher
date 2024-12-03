@@ -55,7 +55,17 @@ void restore_cursor(int signal)
 
 int main(int argc, char *argv[])
 {
-  FILE *ping = popen("ping -A -i 2 -W 3000 24.78.128.1", "r");
+  char *target = "4.2.2.4";
+
+  if (argc > 1)
+    target = argv[1];
+
+  char *cmdline = malloc(strlen(target) + 50);
+
+  strcpy(cmdline, "ping -A -i 2 -W 3000 ");
+  strcat(cmdline, target);
+
+  FILE *ping = popen(cmdline, "r");
 
   int buffer_length = 100;
   char *buffer = malloc(buffer_length);
