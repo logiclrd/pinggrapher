@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include <termios.h>
+
 int readline(FILE *stream, char **buffer, int *buffer_length)
 {
   int buffer_offset = 0;
@@ -70,9 +72,37 @@ int main(int argc, char *argv[])
   int buffer_length = 100;
   char *buffer = malloc(buffer_length);
 
-  int columns[80];
+  int num_columns = 80;
+  int num_rows = 24;
 
-  memset(columns, 0, sizeof(columns));
+  struct winsize ws;
+
+  if (tcgetwinsize(0, &ws) >= 0)
+  {
+    num_columns = ws.ws_col;
+    num_rows = ws.ws_row - 1;
+  }
+
+  int *columns = (int *)malloc(num_columns * sizeof(int));
+  char *screen_buffer = (char *)malloc(num_columns * num_rows + 1);
+
+  memset(columns, 0, num_columns * sizeof(columns[0]));
+
+  int graph_scale = 2000;
+  int auto_graph_scale = 0;
+
+  if (argc > 2)
+  {
+    auto_graph_scale = atoi(argv[2]);
+
+    if (auto_graph_scale > 0)
+    {
+      graph_scale = auto_graph_scale;
+      auto_graph_scale = 0;
+    }
+    else
+      auto_graph_scale = 1;
+  }
 
   printf("\x1B[?25l\x1B[=1S\x1B[2J");
   fflush(stdout);
@@ -83,29 +113,77 @@ int main(int argc, char *argv[])
   {
     if (readline(ping, &buffer, &buffer_length))
     {
+#define LOST_PACKET 5000
+
       char *time = strstr(buffer, "time=");
       char *alarm = strchr(buffer, '\a');
 
       if (time || alarm)
       {
-        int i, j;
-
-        memmove(&columns[0], &columns[1], sizeof(columns) - sizeof(columns[0]));
-        columns[79] = alarm ? 2000 : atoi(time + 5);
-
-        char screen_buffer[80 * 24 + 1];
-
-        for (i=0; i < 24; i++)
+        if (tcgetwinsize(0, &ws) >= 0)
         {
-          char *line_buffer = &screen_buffer[i * 80];
+          if (num_columns != ws.ws_col)
+          {
+            int *new_columns = (int *)malloc(ws.ws_col * sizeof(int));
 
-          int cutoff = 2000 * (24 - i) / 24;
+            int min(int a, int b) { return (a < b) ? a : b; }
 
-          for (j=0; j < 80; j++)
-            line_buffer[j] = (columns[j] > cutoff) ? '#' : ' ';
+            int copy_columns = min(num_columns, ws.ws_col);
+
+            memset(new_columns, 0, ws.ws_col * sizeof(new_columns[0]));
+            memcpy(&new_columns[ws.ws_col - copy_columns], &columns[num_columns - copy_columns], copy_columns * sizeof(columns[0]));
+
+            free(columns);
+            columns = new_columns;
+          }
+
+          if (num_rows != ws.ws_row - 1)
+          {
+            num_rows = ws.ws_row - 1;
+
+            free(screen_buffer);
+            screen_buffer = malloc(num_columns * num_rows + 1);
+          }
         }
 
-        screen_buffer[80 * 24] = 0;
+        int i, j;
+
+        memmove(&columns[0], &columns[1], (num_columns - 1) * sizeof(columns[0]));
+        columns[num_columns - 1] = alarm ? LOST_PACKET : atoi(time + 5);
+
+        if (auto_graph_scale)
+        {
+          graph_scale = 0;
+
+          for (int i=0; i < num_columns; i++)
+            if ((columns[i] > graph_scale) && (columns[i] != LOST_PACKET))
+              graph_scale = columns[i];
+        }
+
+        char screen_buffer[num_columns * num_rows + 1];
+
+        for (i=0; i < num_rows; i++)
+        {
+          char *line_buffer = &screen_buffer[i * num_columns];
+
+          int cutoff = graph_scale * (num_rows - i) / num_rows;
+
+          for (j=0; j < num_columns; j++)
+            line_buffer[j] = (columns[j] == LOST_PACKET) ? 'O' : (columns[j] && (columns[j] >= cutoff)) ? '#' : ' ';
+
+          if (i == 0)
+          {
+            char last = line_buffer[num_columns - 1];
+
+            char time_string[15];
+
+            int time_string_length = sprintf(time_string, columns[num_columns - 1] == LOST_PACKET ? " LOST " : " %d ", columns[num_columns - 1]);
+
+            memcpy(&line_buffer[num_columns - 1 - time_string_length], time_string, time_string_length);
+          }
+        }
+
+        screen_buffer[num_columns * num_rows] = 0;
 
         printf("\x1B[H%s", screen_buffer);
         fflush(stdout);
